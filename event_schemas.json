@@ -1,0 +1,32 @@
+//case_categorized_v2.json
+
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CaseCategorizedV2",
+  "type": "object",
+  "properties": {
+    "case_id": { "type": "string" },
+    "category": { "type": "string" },
+    "confidence_score": { "type": "number" },
+    "model_version": { "type": "string" },
+    "model_provider": { "type": "string" }
+  },
+  "required": ["case_id", "category", "confidence_score", "model_version"],
+  "additionalProperties": false
+}
+
+//UrgencyScored v2
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "UrgencyScoredV2",
+  "type": "object",
+  "properties": {
+    "case_id": { "type": "string" },
+    "urgency_level": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+    "confidence_score": { "type": "number" },
+    "model_version": { "type": "string" },
+    "model_provider": { "type": "string" }
+  },
+  "required": ["case_id", "urgency_level", "confidence_score", "model_version"],
+  "additionalProperties": false
+}
