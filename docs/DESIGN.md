@@ -1,130 +1,100 @@
-# Civic Ledger Database Schema Design
+# Civic Audit Ledger – DESIGN.md
 
-This document describes the schema for the Civic Ledger database, focusing on civic accountability, auditability, and transparency. It covers four core tables: `events`, `event_streams`, `projection_checkpoints`, and `outbox`.
+## Overview
+The Civic Audit Ledger is an event‑sourced accountability system built with Python and PostgreSQL. It records every AI and human decision in civic complaint handling, ensuring **immutability, traceability, and auditability**. The ledger exists to prevent black‑box AI actions, enforce governance rules, and provide tamper‑evident audit trails for journalists, fact‑checkers, and civic oversight teams.
 
 ---
 
-## 1. `events` Table
+## Schema Justification
 
-### SQL DDL
-```sql
-CREATE TABLE IF NOT EXISTS events (
-    event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    stream_id TEXT NOT NULL,
-    stream_position BIGINT NOT NULL,
-    global_position BIGINT GENERATED ALWAYS AS IDENTITY,
-    event_type TEXT NOT NULL,
-    event_version SMALLINT NOT NULL DEFAULT 1,
-    payload JSONB NOT NULL,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    integrity_hash TEXT,
-    previous_hash TEXT,
-    CONSTRAINT uq_stream_position UNIQUE (stream_id, stream_position)
-);
-```
+### `events`
+- **event_id** – unique identifier for each event; ensures reconstructability.
+- **stream_id** – links events to a case or aggregate (e.g., `case-123`); allows lifecycle replay.
+- **event_type** – describes the action (CaseSubmitted, HumanReviewCompleted, etc.).
+- **payload** – JSON body with civic‑relevant details (citizen complaint, reviewer decision).
+- **metadata**:
+  - **correlation_id** – groups related events (e.g., all actions tied to one complaint).
+  - **causation_id** – identifies the triggering event, enabling causal chain reconstruction.
+  - **source** – records whether the event came from a citizen, AI agent, or human reviewer.
+  - **model_version** – ensures transparency; PesaCheck can trace fact‑checks back to the exact AI model used.
+- **integrity_hash / previous_hash** – cryptographic chain for tamper‑evidence.
 
-### Column Justification
+### `event_streams`
+- **stream_id** – identifies the aggregate stream (case, agent session).
+- **archived_at** – supports GDPR‑style retention policies for HRD partners.
+- **global_position** – cross‑stream ordering; CivicSignal can build timelines of civic events.
 
-**event_id –** Immutable identifier for each civic decision; ensures uniqueness for forensic audits.
+### `projection_checkpoints`
+- **projection_name** – identifies a read model (e.g., CaseStatusProjection).
+- **last_position** – ensures projections are consistent and can resume after downtime.
 
-**stream_id –** Maps to a citizen case ID, enabling full lifecycle reconstruction of a complaint from submission to publication.
+### `outbox`
+- **id, stream_id, event_type, payload** – guarantees reliable delivery of events to dashboards.
+- Prevents silent loss of civic decisions; ensures transparency in public reporting.
 
-**stream_position –** Sequential ordering within a case stream; prevents duplicate or conflicting decisions.
+---
 
-**global_position –** Provides cross‑stream ordering, useful for reconstructing timelines (e.g., CivicSignal media monitoring).
+## Hash‑Chain Integrity
+Each event stores:
+- **integrity_hash** – SHA‑256 of the event payload + metadata.
+- **previous_hash** – links to the prior event in the stream.
 
-**event_type –** Captures the nature of the civic action (CaseSubmitted, CaseCategorized, HumanReviewCompleted).
+Together they form a **cryptographic chain**:
+- Any tampering breaks the chain, making it detectable.
+- Crucial for iLAB forensic investigations: investigators can prove that no event was altered after recording.
 
-**event_version –** Supports schema evolution and upcasting, ensuring older events remain interpretable.
+**Example:**  
+“A journalist can verify that an AI’s categorisation of a complaint has not been altered since the fact‑check was published, by checking the hash chain.”
 
-**payload –** Stores the substantive content (citizen complaint, AI classification, human review notes).
+---
 
-**metadata –** Includes correlation_id (link events across aggregates), causation_id (trace triggers), source (citizen, AI agent, reviewer), and model_version (AI provenance). Enables PesaCheck to trace fact‑check decisions back to the exact model and dataset used.
+## Governance Rules
 
-**recorded_at –** Immutable timestamp for accountability; critical for reconstructing decision timelines.
+1. **Case lifecycle state machine**  
+   - Enforced by `CaseReportAggregate`.  
+   - Prevents invalid transitions (e.g., publishing before review).  
 
-**integrity_hash and previous_hash –** Create a cryptographic chain that makes tampering detectable, essential for iLAB forensic investigations.
+2. **Agent context must be loaded (Gas Town pattern)**  
+   - `AgentSessionAggregate.assert_context_loaded()` ensures no AI action occurs without context.  
 
-## 2. event_streams Table
-### SQL DDL
-```sql
-CREATE TABLE IF NOT EXISTS event_streams (
-    stream_id TEXT PRIMARY KEY,
-    aggregate_type TEXT NOT NULL,
-    current_version BIGINT NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    archived_at TIMESTAMPTZ,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
-);
-```
-### Column Justification
+3. **Model version transparency**  
+   - Command handlers reject mismatched versions.  
+   - Guarantees reproducibility of AI outputs.  
 
-**stream_id –** Identifies the aggregate boundary (e.g., CaseReport, PolicyComplianceRecord).
+4. **Confidence floor**  
+   - If confidence < 0.6, system auto‑flags for human review.  
+   - Prevents low‑confidence AI decisions from being published unchecked.  
 
-**aggregate_type –** Defines the type of civic entity; supports separation of concerns in accountability.
+5. **Policy compliance dependency**  
+   - `PolicyComplianceRecord.all_checks_completed()` must be true before escalation/publish.  
+   - Blocks premature actions.  
 
-**current_version –** Tracks latest position for concurrency control; prevents double‑decisions.
+6. **Causal chain enforcement**  
+   - `handle_generate_recommendation` verifies each supporting agent session actually contributed to the case (`last_case_id == case_id`).  
+   - Prevents fabricated causal chains.  
 
-**created_at –** Records when the case stream was initiated.
+7. **Human override requirement**  
+   - Escalation/publication require a prior `HumanReviewCompleted` with decision = approved.  
+   - Enforced by `CaseReportAggregate.assert_review_approved()`.  
 
-**archived_at –** Supports GDPR‑style data retention policies for HRD partners.
+**Example:**  
+“CfA’s iLAB can replay the exact sequence of agent decisions that led to a disputed report being escalated to authorities.”
 
-**metadata –** Allows attaching contextual information (e.g., jurisdiction, partner organization).
+---
 
-## 3. projection_checkpoints Table
-### SQL DDL
-```sql
-CREATE TABLE IF NOT EXISTS projection_checkpoints (
-    projection_name TEXT PRIMARY KEY,
-    last_position BIGINT NOT NULL DEFAULT 0,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-#### Column Justification
-**projection_name –** Identifies dashboards or read models (e.g., “PublicAuditLedger”).
+## Deployment Considerations
+- **PostgreSQL** – chosen for reliability and accessibility in low‑resource civic environments.  
+- **Docker** – containerized deployment for reproducibility.  
+- **Offline‑first design** – projections and checkpoints allow local replay even without continuous connectivity.  
 
-**last_position –** Ensures reproducible dashboards by tracking how far each projection has processed the event log.
+---
 
-**updated_at –** Provides transparency on when dashboards were last refreshed.
+## CfA Alignment
+- **PesaCheck** – can trace AI fact‑checks back to model version and source document.  
+- **source.AFRICA** – metadata fields (correlation_id, causation_id) link fact‑checks to original evidence.  
+- **iLAB** – hash‑chain integrity ensures forensic tamper‑evidence.  
+- **CivicSignal** – global_position enables timeline reconstruction for media monitoring.  
 
-## 4. outbox Table
-### SQL DDL
-```sql
-CREATE TABLE IF NOT EXISTS outbox (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id UUID NOT NULL REFERENCES events(event_id),
-    destination TEXT NOT NULL,
-    payload JSONB NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    published_at TIMESTAMPTZ,
-    attempts SMALLINT NOT NULL DEFAULT 0
-);
-```
-#### Column Justification
-**id –** Unique identifier for outbox entry.
+---
 
-**event_id –** Links back to the original civic event for traceability.
-
-**destination –** Specifies external system (e.g., public dashboard, partner API).
-
-**payload –** Contains the event summary for reliable publishing.
-
-**created_at –** Timestamp of outbox entry creation.
-
-**published_at –** Records when the event was successfully delivered.
-
-**attempts –** Tracks retries, ensuring no silent loss of civic decisions.
-
-## Governance Contract: Immutability, Traceability, Auditability
-Together, these tables enforce the governance contract:
-
-**Immutability –** Events are append‑only, chained with hashes, making tampering detectable.
-
-**Traceability –** Metadata fields (correlation_id, causation_id, source, model_version) allow investigators to trace decisions back to their origin.
-
-**Auditability –** Projection checkpoints and outbox guarantee reproducible dashboards and reliable delivery.
-
-**Reconstructability –** Stream IDs and positions enable full lifecycle reconstruction of citizen complaints.
-
-Placeholder: Add CfA‑specific context here (e.g., how PesaCheck, source.AFRICA, and iLAB use these features in practice).
+  
