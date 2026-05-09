@@ -12,3 +12,21 @@ def event_store():
         cur.execute("TRUNCATE events, event_streams, projection_checkpoints, outbox CASCADE;")
         conn.commit()
     return store
+
+
+
+@pytest.fixture(autouse=True)
+def reset_db():
+    """Reset event store and projections before each test."""
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            TRUNCATE events,
+                     event_streams,
+                     projection_checkpoints,
+                     case_summary_projection,
+                     compliance_audit_current,
+                     agent_accountability_ledger
+            CASCADE
+        """)
+        conn.commit()

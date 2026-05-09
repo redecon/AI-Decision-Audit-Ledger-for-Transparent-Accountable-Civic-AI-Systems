@@ -6,7 +6,9 @@ from psycopg.errors import SerializationFailure
 
 from src.civic_ledger.db import get_connection
 from src.civic_ledger.event_store.exceptions import ConcurrencyError
-
+from typing import List, Optional
+from src.civic_ledger.upcasting.registry import UpcasterRegistry
+from src.civic_ledger.db import get_connection
 
 class EventStore:
     """
@@ -14,10 +16,22 @@ class EventStore:
     concurrency control, and outbox publishing for civic audit ledgers.
     """
 
-    def append(self, stream_id, expected_last_position, event_type, payload_dict, metadata_dict=None):
+    def append(
+        self,
+        stream_id: str,
+        event_type: str,
+        payload_dict: dict,
+        expected_last_position: int | None = None,
+        metadata_dict: dict | None = None,
+        recorded_at: datetime | None = None,
+    ):
         metadata_dict = metadata_dict or {}
         if "correlation_id" not in metadata_dict:
             metadata_dict["correlation_id"] = str(uuid.uuid4())
+        if recorded_at is None:
+            recorded_at = datetime.now(timezone.utc).isoformat()
+        elif isinstance(recorded_at, datetime):
+            recorded_at = recorded_at.isoformat()
 
         with get_connection() as conn:
             try:
@@ -112,51 +126,96 @@ class EventStore:
                 if isinstance(e, ConcurrencyError):
                     raise
                 raise
-    def load_stream(self, stream_id):
-        """Return all events for a given stream as dicts."""
+    def load_stream(
+        self,
+        stream_id: str,
+        upcaster_registry: Optional[UpcasterRegistry] = None
+    ) -> List[dict]:
+        """
+        Return all events for a given stream ordered by stream_position.
+        If an UpcasterRegistry is provided, upcast each event in-memory before returning.
+        """
         with get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT stream_id, stream_position, event_type, payload, metadata, recorded_at, integrity_hash "
-                "FROM events WHERE stream_id = %s ORDER BY stream_position;",
-                (stream_id,)
-            )
-            rows = cur.fetchall()
-            return [
-                {
-                    "stream_id": r[0],
-                    "stream_position": r[1],
-                    "event_type": r[2],
-                    "payload": r[3],
-                    "metadata": r[4],
-                    "recorded_at": r[5],
-                    "integrity_hash": r[6],
-                }
-                for r in rows
-            ]
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT event_id, stream_id, stream_position, global_position,
+                           event_type, payload, metadata, recorded_at,
+                           integrity_hash, previous_hash, event_version
+                    FROM events
+                    WHERE stream_id = %s
+                    ORDER BY stream_position ASC
+                    """,
+                    (stream_id,),
+                )
+                rows = cur.fetchall()
 
-    def load_all(self, from_global_position=0):
+        events = []
+        for r in rows:
+            event = {
+                "event_id": r[0],
+                "stream_id": r[1],
+                "stream_position": r[2],
+                "global_position": r[3],
+                "event_type": r[4],
+                "payload": r[5],
+                "metadata": r[6],
+                "recorded_at": r[7],
+                "integrity_hash": r[8],
+                "previous_hash": r[9],
+                "event_version": r[10],
+            }
+            if upcaster_registry:
+                event = upcaster_registry.upcast(event)
+            events.append(event)
+
+        return events
+
+    def load_all(
+        self,
+        from_global_position: int = 0,
+        upcaster_registry: Optional[UpcasterRegistry] = None
+    ) -> List[dict]:
+        """
+        Return all events with global_position > from_global_position ordered by global_position.
+        If an UpcasterRegistry is provided, upcast each event in-memory before returning.
+        """
         with get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT event_id, stream_id, stream_position, event_type, payload, metadata, recorded_at, integrity_hash "
-                "FROM events WHERE global_position > %s ORDER BY global_position ASC;",
-                (from_global_position,)
-            )
-            rows = cur.fetchall()
-            return [
-                {
-                    "event_id": r[0],
-                    "stream_id": r[1],
-                    "stream_position": r[2],
-                    "event_type": r[3],
-                    "payload": r[4],
-                    "metadata": r[5],
-                    "recorded_at": r[6],
-                    "integrity_hash": r[7],
-                }
-                for r in rows
-            ]
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT global_position, event_id, stream_id, stream_position,
+                           event_type, payload, metadata, recorded_at,
+                           integrity_hash, previous_hash, event_version
+                    FROM events
+                    WHERE global_position > %s
+                    ORDER BY global_position ASC
+                    """,
+                    (from_global_position,),
+                )
+                rows = cur.fetchall()
+
+        events = []
+        for r in rows:
+            event = {
+                "global_position": r[0],
+                "event_id": r[1],
+                "stream_id": r[2],
+                "stream_position": r[3],
+                "event_type": r[4],
+                "payload": r[5],
+                "metadata": r[6],
+                "recorded_at": r[7],
+                "integrity_hash": r[8],
+                "previous_hash": r[9],
+                "event_version": r[10],
+            }
+            if upcaster_registry:
+                event = upcaster_registry.upcast(event)
+            events.append(event)
+
+        return events
+
 
     def verify_stream_integrity(self, stream_id):
         """Recompute the hash chain for a stream and verify integrity."""
