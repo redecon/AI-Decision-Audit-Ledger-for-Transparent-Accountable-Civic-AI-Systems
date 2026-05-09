@@ -163,10 +163,11 @@ class CaseReportAggregate(Aggregate):
             # Escalate/Publish handlers will enforce final transition.
             pass
 
-
-
-    def _on_CaseEscalated(self, payload: Dict, metadata: Dict):
+    def _on_CaseEscalated(self, payload: dict, metadata: dict):
         self.state = "ESCALATED"
+        self.reviewer_id = payload.get("reviewer_id")
+        self.target_authority = payload.get("target_authority")  
+
 
     def _on_CasePublished(self, payload: Dict, metadata: Dict):
         self.state = "PUBLISHED"
