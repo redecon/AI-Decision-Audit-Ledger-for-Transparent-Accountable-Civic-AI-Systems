@@ -155,7 +155,7 @@ def handle_generate_recommendation(cmd: GenerateRecommendationCommand, store: Ev
         # check: ensure agent actually contributed to this case
         if agent_session.last_case_id != cmd.case_id:
          raise DomainError(f"Causal chain broken: agent {agent_id} did not contribute to case {cmd.case_id}")
-        contributing_sessions.append({"agent_id": agent_id, "session_id": session_id})
+        contributing_sessions.append({"agent_id": agent_id, "session_id": session_id, "model_version": agent_session.model_version})
 
     payload = {
         "recommendation": cmd.recommendation,
