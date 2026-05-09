@@ -86,7 +86,7 @@ Run the complete test suite (all phases):
 pytest -v
 ```
 Key test files:
-
+```
 Test file ------------------------------What it validates
 test_event_store.py---------------------Immutability, concurrency, hash‑chain integrity
 test_phase2_civic_rules.py--------------All 7 governance rules
@@ -95,7 +95,7 @@ test_upcasting.py-----------------------Immutable schema evolution
 test_integrity_audit.py-----------------Cross‑stream audit chain and tamper detection
 test_agent_memory.py--------------------Gas Town agent context reconstruction
 test_mcp_integration.py-----------------Full end‑to‑end lifecycle via the API
-
+```
 
 ## Documentation
 **DOMAIN_NOTES.md –** Event sourcing rationale, aggregates, and upcasting.
